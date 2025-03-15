@@ -6,12 +6,17 @@ This demonstrates how to use an inexpensive segmented LED display such as the on
 * relative humidity
 * temperature
 
+The examples from my initial prototyping show how outside temperature (in either degrees C or F), an integer value, and 24h time might look on a small 4 digit display.  Note that the red LEDs appear washed out in all my pictures, but in person they much crisper and brighter than these pics (even at brighness level '2').
+
+<img src=docs/tm1637_4_example_degC_w_integer.png width=200 />
+<img src=docs/tm1637_4_example_degF_w_24h_time.png width=200 />
+
 ## Hardware
 My testing has been with an ESP32 dev board, and 4 digit version of the TM1637.  I purchased five of these displays for about $8 US:
+
 ![TM1637 Module 4 Digits](docs/tm1637_4_digits_dims_small.png)
 
 I simply made 4 connections for ground, 3V, and GPIO with Clock & Data. No additional resistors or capacitors were neccessary to make it work.
-
 
 ## Signal K configuration
 Initially I used the value from `environment.outside.relativeHumidity` for development, because my signal K instance was already configured to get NOAA weather data using a fixed position.  See [signalk-noaa-weather](https://github.com/sbender9/signalk-noaa-weather) and [signalk-fixed-position](https://github.com/saillogger/signalk-fixed-position)) for info on these two plugins.  This configuration should work with a dev-only instance of signal K, using no other sensors or input besides an internet connection.  An alternative to `signalk-fixed-position` is [signalk-fixedstation](https://github.com/inspired-technologies/signalk-fixedstation-plugin)
