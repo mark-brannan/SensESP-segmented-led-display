@@ -15,14 +15,83 @@
 #include "sensesp/sensors/digital_input.h"
 #include "sensesp/sensors/sensor.h"
 #include "sensesp/signalk/signalk_output.h"
+#include "sensesp/signalk/signalk_value_listener.h"
 #include "sensesp/system/lambda_consumer.h"
 #include "sensesp_app_builder.h"
+#include <AceTMI.h> // SimpleTmi1637Interface
+#include <AceSegment.h> // Tm1637Module
+#include <AceSegmentWriter.h> // NumberWriter
 
 using namespace sensesp;
+
+const uint8_t NUM_DIGITS_4 = 4;
+const uint8_t NUM_DIGITS_6 = 6;
+const uint8_t NUM_DIGITS_8 = 8;
+
+using Tmi1637Interface = ace_tmi::SimpleTmi1637Interface;
+using Tmi1638Interface = ace_tmi::SimpleTmi1638Interface;
+
+typedef typename ace_segment::Tm1637Module<Tmi1637Interface, NUM_DIGITS_4> Tm1637_4_digit;
+typedef typename ace_segment::Tm1637Module<Tmi1637Interface, NUM_DIGITS_6> Tm1637_6_digit;
+typedef typename ace_segment::Tm1638Module<Tmi1638Interface, NUM_DIGITS_8> Tm1638_8_digit;
+
+const uint8_t TM1637_BIT_DELAY = 100;
+const uint8_t TM1638_DELAY_MICROS = 1;
+const uint8_t commonClk = 15;
 
 // The setup function performs one-time application initialization.
 void setup() {
   SetupLogging(ESP_LOG_DEBUG);
+
+  using ace_segment::LedModule;
+  using ace_segment::PatternWriter;
+  using ace_segment::NumberWriter;
+  using ace_segment::TemperatureWriter;
+  using ace_segment::ClockWriter;
+
+  Tmi1637Interface interface1(16, commonClk, TM1637_BIT_DELAY);
+  Tm1637_4_digit ledModule1(interface1);
+  interface1.begin();
+  ledModule1.begin();
+  ledModule1.setBrightness(2);
+  PatternWriter<LedModule> patternWriter1(ledModule1);
+  NumberWriter<LedModule> numberWriter1(patternWriter1);
+  numberWriter1.clear();
+  ledModule1.flush();
+
+  Tmi1637Interface interface2(17, commonClk, TM1637_BIT_DELAY);
+  Tm1637_4_digit ledModule2(interface2);
+  interface2.begin();
+  ledModule2.begin();
+  ledModule2.setBrightness(2);
+  PatternWriter<LedModule> patternWriter2(ledModule2);
+  NumberWriter<LedModule> numberWriter2(patternWriter2);
+  TemperatureWriter<LedModule> temperatureWriter(numberWriter2);
+  temperatureWriter.clear();
+  ledModule2.flush();
+
+  Tmi1637Interface interface3(18, commonClk, TM1637_BIT_DELAY);
+  Tm1637_4_digit ledModule3(interface3);
+  interface3.begin();
+  ledModule3.begin();
+  ledModule3.setBrightness(2);
+  PatternWriter<LedModule> patternWriter3(ledModule3);
+  NumberWriter<LedModule> numberWriter3(patternWriter3);
+  ClockWriter<LedModule> clockWriterHoursMinutes(numberWriter3);
+  clockWriterHoursMinutes.clear();
+  ledModule3.flush();
+
+  Tmi1637Interface interface4(19, commonClk, TM1637_BIT_DELAY);
+  Tm1637_4_digit ledModule4(interface4);
+  interface4.begin();
+  ledModule4.begin();
+  ledModule4.setBrightness(2);
+  PatternWriter<LedModule> patternWriter4(ledModule4);
+  NumberWriter<LedModule> numberWriter4(patternWriter4);
+  ClockWriter<LedModule> clockWriterMinutesSeconds(numberWriter4);
+  clockWriterMinutesSeconds.clear();
+  ledModule4.flush();
+
 
   // Construct the global SensESPApp() object
   SensESPAppBuilder builder;
@@ -34,105 +103,49 @@ void setup() {
                     //->set_wifi_client("My WiFi SSID", "my_wifi_password")
                     //->set_wifi_access_point("My AP SSID", "my_ap_password")
                     //->set_sk_server("192.168.10.3", 80)
-                    ->get_app();
+  ->get_app();
 
-  // GPIO number to use for the analog input
-  const uint8_t kAnalogInputPin = 36;
-  // Define how often (in milliseconds) new samples are acquired
-  const unsigned int kAnalogInputReadInterval = 500;
-  // Define the produced value at the maximum input voltage (3.3V).
-  // A value of 3.3 gives output equal to the input voltage.
-  const float kAnalogInputScale = 3.3;
+  auto* listener1 = new IntSKListener("environment.outside.relativeHumidity");
 
-  // Create a new Analog Input Sensor that reads an analog input pin
-  // periodically.
-  auto analog_input = std::make_shared<AnalogInput>(
-      kAnalogInputPin, kAnalogInputReadInterval, "", kAnalogInputScale);
+  listener1->connect_to(new LambdaConsumer<int>([&numberWriter1, &ledModule1](int data) {
+    numberWriter1.clear();
+    numberWriter1.writeSignedDecimal(data, 4);
+    ledModule1.flush();
+  }));
 
-  // Add an observer that prints out the current value of the analog input
-  // every time it changes.
-  analog_input->attach([analog_input]() {
-    debugD("Analog input value: %f", analog_input->get());
-  });
+  auto* listener2 = new FloatSKListener("environment.outside.temperature");
 
-  // Set GPIO pin 15 to output and toggle it every 650 ms
+  listener2->connect_to(new LambdaConsumer<float>([&temperatureWriter, &ledModule2](float data) {
+    int degreesC = data - 273.15;
+    int degreesF = (data - 273.15) * (9.0/5) + 32;
+    temperatureWriter.clear();
+    temperatureWriter.writeTempDegC(degreesC, 4);
+    //temperatureWriter.writeTempDegF(degreesF, 4);
+    ledModule2.flush();
+  }));
 
-  const uint8_t kDigitalOutputPin = 15;
-  const unsigned int kDigitalOutputInterval = 650;
-  pinMode(kDigitalOutputPin, OUTPUT);
-  event_loop()->onRepeat(kDigitalOutputInterval, [kDigitalOutputPin]() {
-    digitalWrite(kDigitalOutputPin, !digitalRead(kDigitalOutputPin));
-  });
+  auto* timeListener = new StringSKListener("environment.time", 50);
 
-  // Read GPIO 14 every time it changes
+  timeListener->connect_to(new LambdaConsumer<String>([
+    &clockWriterHoursMinutes,
+    &clockWriterMinutesSeconds,
+    &ledModule3,
+    &ledModule4
+  ](String data) {
 
-  const uint8_t kDigitalInput1Pin = 14;
-  auto digital_input1 = std::make_shared<DigitalInputChange>(
-      kDigitalInput1Pin, INPUT_PULLUP, CHANGE);
+    int year, month, day, hour, minute;
+    float second;
+    std::sscanf(data.c_str(), "%d-%d-%dT%d:%d:%fZ", &year, &month, &day, &hour, &minute, &second);
 
-  // Connect the digital input to a lambda consumer that prints out the
-  // value every time it changes.
+    clockWriterHoursMinutes.clear();
+    clockWriterHoursMinutes.writeHourMinute24(hour, minute);
+    ledModule3.flush();
+    // TODO: ask/PR for an upstream 'writeMinutesSeconds' method
+    clockWriterMinutesSeconds.clear();
+    clockWriterMinutesSeconds.writeHourMinute24(minute, second);
+    ledModule4.flush();
+  }));
 
-  // Test this yourself by connecting pin 15 to pin 14 with a jumper wire and
-  // see if the value changes!
-
-  auto digital_input1_consumer = std::make_shared<LambdaConsumer<bool>>(
-      [](bool input) { debugD("Digital input value changed: %d", input); });
-
-  digital_input1->connect_to(digital_input1_consumer);
-
-  // Create another digital input, this time with RepeatSensor. This approach
-  // can be used to connect external sensor library to SensESP!
-
-  const uint8_t kDigitalInput2Pin = 13;
-  const unsigned int kDigitalInput2Interval = 1000;
-
-  // Configure the pin. Replace this with your custom library initialization
-  // code!
-  pinMode(kDigitalInput2Pin, INPUT_PULLUP);
-
-  // Define a new RepeatSensor that reads the pin every 100 ms.
-  // Replace the lambda function internals with the input routine of your custom
-  // library.
-
-  // Again, test this yourself by connecting pin 15 to pin 13 with a jumper
-  // wire and see if the value changes!
-
-  auto digital_input2 = std::make_shared<RepeatSensor<bool>>(
-      kDigitalInput2Interval,
-      [kDigitalInput2Pin]() { return digitalRead(kDigitalInput2Pin); });
-
-  // Connect the analog input to Signal K output. This will publish the
-  // analog input value to the Signal K server every time it changes.
-  auto aiv_metadata = std::make_shared<SKMetadata>("V", "Analog input voltage");
-  auto aiv_sk_output = std::make_shared<SKOutput<float>>(
-      "sensors.analog_input.voltage",   // Signal K path
-      "/Sensors/Analog Input/Voltage",  // configuration path, used in the
-                                        // web UI and for storing the
-                                        // configuration
-      aiv_metadata
-  );
-
-  ConfigItem(aiv_sk_output)
-      ->set_title("Analog Input Voltage SK Output Path")
-      ->set_description("The SK path to publish the analog input voltage")
-      ->set_sort_order(100);
-
-  analog_input->connect_to(aiv_sk_output);
-
-  // Connect digital input 2 to Signal K output.
-  auto di2_metadata = std::make_shared<SKMetadata>("", "Digital input 2 value");
-  auto di2_sk_output = std::make_shared<SKOutput<bool>>(
-      "sensors.digital_input2.value",    // Signal K path
-      "/Sensors/Digital Input 2/Value",  // configuration path
-      di2_metadata
-  );
-
-  ConfigItem(di2_sk_output)
-      ->set_title("Digital Input 2 SK Output Path")
-      ->set_sort_order(200);
-
-  digital_input2->connect_to(di2_sk_output);
 
   // To avoid garbage collecting all shared pointers created in setup(),
   // loop from here.
@@ -141,4 +154,7 @@ void setup() {
   }
 }
 
-void loop() { event_loop()->tick(); }
+void loop() {
+  event_loop()->tick();
+}
+
