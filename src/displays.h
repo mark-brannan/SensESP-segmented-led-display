@@ -1,10 +1,15 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
-//#include <chrono>
-#include <AceTMI.h>
 #include <AceSegment.h>
 #include <AceSegmentWriter.h>
+#include <AceTMI.h>
+
+#include <cmath>
+#include <cstdio>
+#include <memory>
+
+#include "sensesp.h"
 #include "temperature.h"
 
 namespace segmented_led_display {
@@ -23,130 +28,152 @@ const uint8_t NUM_DIGITS_8 = 8;
 const uint8_t TM1637_BIT_DELAY = 100;
 const uint8_t TM1638_DELAY_MICROS = 1;
 
+const uint8_t DEFAULT_BRIGHTNESS = 2;
+
+/**
+ * High-level writer API over an AceSegment LedModule. The writers hold
+ * references to each other and to the module, so a facade is neither
+ * copyable nor movable; create one with the factory functions below and
+ * keep the returned std::shared_ptr.
+ */
 class DisplayFacade {
  public:
-   explicit DisplayFacade(ace_segment::LedModule* ledModule);
+  explicit DisplayFacade(ace_segment::LedModule& ledModule)
+      : ledModule_(ledModule),
+        patternWriter_(ledModule),
+        numberWriter_(patternWriter_),
+        clockWriter_(numberWriter_),
+        temperatureWriter_(numberWriter_) {}
 
-   void writeSignedDecimal(int value);
-   void writeFloat(float value, uint8_t prec = 2);
-   void writeTempDegC(float degressK);
-   void writeTempDegF(float degressK);
-   void writeHourMinute24(String iso8601);
-   void writeMinutesSeconds(String iso8601);
+  DisplayFacade(const DisplayFacade&) = delete;
+  DisplayFacade& operator=(const DisplayFacade&) = delete;
+  virtual ~DisplayFacade() = default;
 
-   virtual void begin() = 0;
-   virtual void flush() = 0;
-   void clear();
-   void setBrightness(uint8_t brightness);
-   uint8_t size();
+  /**
+   * Write a 'decimal' (int) value using similar rules as printf.
+   * The display size is implicitly used for the print width (right
+   * justified), and a negative sign will be prepended for negative values.
+   * For example, for a display of size 4: printf("%4d", value).
+   */
+  void writeSignedDecimal(int value) {
+    clear();
+    numberWriter_.writeSignedDecimal(value, size());
+    flush();
+  }
+
+  /**
+   * Write a value using the same format as the Print class.
+   * @note: Undefined behavior for displays with no decimal segment.
+   */
+  void writeFloat(float value, uint8_t prec = 2) {
+    clear();
+    numberWriter_.writeFloat(value, prec);
+    flush();
+  }
+
+  /** Write a temperature given in kelvin as whole degrees C. */
+  void writeTempDegC(float degreesK) {
+    clear();
+    temperatureWriter_.writeTempDegC(roundToInt16(convertDegreesKtoC(degreesK)),
+                                     size());
+    flush();
+  }
+
+  /** Write a temperature given in kelvin as whole degrees F. */
+  void writeTempDegF(float degreesK) {
+    clear();
+    temperatureWriter_.writeTempDegF(roundToInt16(convertDegreesKtoF(degreesK)),
+                                     size());
+    flush();
+  }
+
+  /** Write the HH:MM part of an ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SSZ). */
+  void writeHourMinute24(const String& iso8601) {
+    int hour, minute, second;
+    if (!parseIso8601Time(iso8601, hour, minute, second)) {
+      return;
+    }
+    clear();
+    clockWriter_.writeHourMinute24(hour, minute);
+    flush();
+  }
+
+  /** Write the MM:SS part of an ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SSZ). */
+  void writeMinutesSeconds(const String& iso8601) {
+    int hour, minute, second;
+    if (!parseIso8601Time(iso8601, hour, minute, second)) {
+      return;
+    }
+    clear();
+    clockWriter_.writeHourMinute24(minute, second);
+    flush();
+  }
+
+  virtual void begin() = 0;
+  virtual void flush() = 0;
+  void clear() { patternWriter_.clear(); }
+  void setBrightness(uint8_t brightness) { ledModule_.setBrightness(brightness); }
+  uint8_t size() const { return ledModule_.size(); }
 
  protected:
-   ace_segment::LedModule* ledModule;
-   ace_segment::PatternWriter<ace_segment::LedModule>* patternWriter;
-   ace_segment::NumberWriter<ace_segment::LedModule>* numberWriter;
-   ace_segment::ClockWriter<ace_segment::LedModule>* clockWriter;
-   ace_segment::TemperatureWriter<ace_segment::LedModule>* temperatureWriter;
+  static int16_t roundToInt16(float value) {
+    return static_cast<int16_t>(std::lround(value));
+  }
+
+  static bool parseIso8601Time(const String& iso8601, int& hour, int& minute,
+                               int& second) {
+    int year, month, day;
+    int matched = std::sscanf(iso8601.c_str(), "%d-%d-%dT%d:%d:%d", &year,
+                              &month, &day, &hour, &minute, &second);
+    if (matched != 6) {
+      ESP_LOGW(__FILE__, "Could not parse ISO 8601 time '%s'",
+               iso8601.c_str());
+      return false;
+    }
+    return true;
+  }
+
+  ace_segment::LedModule& ledModule_;
+  ace_segment::PatternWriter<ace_segment::LedModule> patternWriter_;
+  ace_segment::NumberWriter<ace_segment::LedModule> numberWriter_;
+  ace_segment::ClockWriter<ace_segment::LedModule> clockWriter_;
+  ace_segment::TemperatureWriter<ace_segment::LedModule> temperatureWriter_;
 };
 
-DisplayFacade::DisplayFacade(ace_segment::LedModule* ledModule)
-    : ledModule(ledModule),
-      patternWriter(new ace_segment::PatternWriter<ace_segment::LedModule>(*ledModule)),
-      numberWriter(new ace_segment::NumberWriter<ace_segment::LedModule>(*patternWriter)),
-      clockWriter(new ace_segment::ClockWriter<ace_segment::LedModule>(*numberWriter)),
-      temperatureWriter(new ace_segment::TemperatureWriter<ace_segment::LedModule>(*numberWriter))
-      {}
-
-void DisplayFacade::clear() {
-  this->patternWriter->clear();
-}
-
-void DisplayFacade::setBrightness(uint8_t brightness) {
-  this->ledModule->setBrightness(brightness);
-}
-
-uint8_t DisplayFacade::size() {
-  return this->ledModule->size();
-}
 /**
- * Write a 'decimal' (int) value using similar rules as printf.
- * The display size is implicitly used for the print with (right justified),
- * and a negative sign will be prepended for negative values.
- * For example, for a display of size 4: printf("%-4d", value).
+ * Owns the TMI interface and the LED module. Kept as a separate base class
+ * so that it is fully constructed before DisplayFacade binds to the module.
  */
-void DisplayFacade::writeSignedDecimal(int value) {
-  clear();
-  numberWriter->writeSignedDecimal(value, size());
-  flush();
-}
+template <template <typename, uint8_t> class T_TM163X_MODULE, typename T_TMII,
+          uint8_t T_DIGITS>
+struct Tm163xHardware {
+  explicit Tm163xHardware(const T_TMII& tmiInterface)
+      : interface(tmiInterface), ledModule(interface) {}
 
-/**
- * Write a value using the same format as the Print class.
- * @note: Undefined behavior for displays with no decimal segment.
- */
-void DisplayFacade::writeFloat(float value, uint8_t prec) {
-  clear();
-  numberWriter->writeFloat(value, prec);
-  flush();
-}
+  T_TMII interface;
+  T_TM163X_MODULE<T_TMII, T_DIGITS> ledModule;
+};
 
-void DisplayFacade::writeTempDegC(float degreesK) {
-    clear();
-    temperatureWriter->writeTempDegC(convertDegreesKtoC(degreesK), size());
-    flush();
-}
-
-void DisplayFacade::writeTempDegF(float degreesK) {
-    clear();
-    temperatureWriter->writeTempDegF(convertDegreesKtoF(degreesK), size());
-    flush();
-}
-
-void DisplayFacade::writeHourMinute24(String iso8601) {
-  clear();
-  //std::chrono::sys_time<std::chrono::seconds> tp;
-  //std::istringstream(iso8601) >> std::chrono::parse("%Y-%m-%dT%H:%M:%SZ", tp);
-  int year, month, day, hour, minute, second;
-  std::sscanf(iso8601.c_str(), "%d-%d-%dT%d:%d:%dZ", &year, &month, &day, &hour, &minute, &second);
-
-  clockWriter->writeHourMinute24(hour, minute);
-  flush();
-}
-
-void DisplayFacade::writeMinutesSeconds(String iso8601) {
-  clear();
-  //std::chrono::sys_time<std::chrono::seconds> tp;
-  //std::istringstream(iso8601) >> std::chrono::parse("%Y-%m-%dT%H:%M:%SZ", tp);
-  int year, month, day, hour, minute, second;
-  std::sscanf(iso8601.c_str(), "%d-%d-%dT%d:%d:%dZ", &year, &month, &day, &hour, &minute, &second);
-
-  clockWriter->writeHourMinute24(minute, second);
-  flush();
-}
-
-template <template<typename, uint8_t> class T_TM163X_MODULE, typename T_TMII, uint8_t T_DIGITS>
-class Tm163xFacade : public DisplayFacade {
-
- protected:
-   T_TMII interface;
-   T_TM163X_MODULE<T_TMII, T_DIGITS>* ledModule;
+template <template <typename, uint8_t> class T_TM163X_MODULE, typename T_TMII,
+          uint8_t T_DIGITS>
+class Tm163xFacade
+    : private Tm163xHardware<T_TM163X_MODULE, T_TMII, T_DIGITS>,
+      public DisplayFacade {
+  using Hardware = Tm163xHardware<T_TM163X_MODULE, T_TMII, T_DIGITS>;
 
  public:
-   Tm163xFacade(
-       T_TMII interface,
-       T_TM163X_MODULE<T_TMII, T_DIGITS>* ledModule)
-        : DisplayFacade(ledModule), ledModule(ledModule), interface(interface) {
-          this->begin();
-          setBrightness(2);
-        }
+  explicit Tm163xFacade(const T_TMII& tmiInterface)
+      : Hardware(tmiInterface), DisplayFacade(Hardware::ledModule) {
+    begin();
+    setBrightness(DEFAULT_BRIGHTNESS);
+  }
 
-   void begin() override {
-       this->interface.begin();
-       this->ledModule->begin();
-   }
+  void begin() override {
+    Hardware::interface.begin();
+    Hardware::ledModule.begin();
+  }
 
-   void flush() override {
-       this->ledModule->flush();
-   }
+  void flush() override { Hardware::ledModule.flush(); }
 };
 
 // We are always using the 'Simple' interface for SensESP
@@ -156,31 +183,26 @@ using Tmi1637Interface = ace_tmi::SimpleTmi1637Interface;
 using Tmi1638Interface = ace_tmi::SimpleTmi1638Interface;
 
 template <uint8_t T_DIGITS>
-using Tm1637Facade = Tm163xFacade<ace_segment::Tm1637Module, Tmi1637Interface, T_DIGITS>;
+using Tm1637Facade =
+    Tm163xFacade<ace_segment::Tm1637Module, Tmi1637Interface, T_DIGITS>;
 template <uint8_t T_DIGITS>
-using Tm1638Facade = Tm163xFacade<ace_segment::Tm1638Module, Tmi1638Interface, T_DIGITS>;
+using Tm1638Facade =
+    Tm163xFacade<ace_segment::Tm1638Module, Tmi1638Interface, T_DIGITS>;
 
 template <uint8_t T_DIGITS>
-inline Tm1637Facade<T_DIGITS> createTm1637Facade(
-  DioPin_t dioPin,
-  ClkPin_t clkPin
-) {
-  Tmi1637Interface interface(dioPin, clkPin, TM1637_BIT_DELAY);
-  auto ledModule = new ace_segment::Tm1637Module<Tmi1637Interface, T_DIGITS>(interface);
-  return Tm1637Facade<T_DIGITS>(interface, ledModule);
+inline std::shared_ptr<Tm1637Facade<T_DIGITS>> createTm1637Facade(
+    DioPin_t dioPin, ClkPin_t clkPin) {
+  return std::make_shared<Tm1637Facade<T_DIGITS>>(
+      Tmi1637Interface(dioPin, clkPin, TM1637_BIT_DELAY));
 }
 
 template <uint8_t T_DIGITS>
-inline Tm1638Facade<T_DIGITS> createTm1638Facade(
-  DioPin_t dioPin,
-  ClkPin_t clkPin,
-  StbPin_t stbPin
-) {
-  Tmi1638Interface interface(dioPin, clkPin, stbPin, TM1638_DELAY_MICROS);
-  ace_segment::Tm1638Module<Tmi1638Interface, T_DIGITS> ledModule(interface);
-  return Tm1638Facade<T_DIGITS>(interface, &ledModule);
+inline std::shared_ptr<Tm1638Facade<T_DIGITS>> createTm1638Facade(
+    DioPin_t dioPin, ClkPin_t clkPin, StbPin_t stbPin) {
+  return std::make_shared<Tm1638Facade<T_DIGITS>>(
+      Tmi1638Interface(dioPin, clkPin, stbPin, TM1638_DELAY_MICROS));
 }
 
-};
+}  // namespace segmented_led_display
 
 #endif /* DISPLAY_H */

@@ -1,28 +1,22 @@
-// Signal K application template file.
-//
-// This application demonstrates core SensESP concepts in a very
-// concise manner. You can build and upload the application as is
-// and observe the value changes on the serial port monitor.
-//
-// You can use this source file as a basis for your own projects.
-// Remove the parts that are not relevant to you, and add your own code
-// for external hardware libraries.
+// Drive four 4-digit TM1637 LED displays from Signal K values:
+// two showing the current time (HH:MM and MM:SS), one showing relative
+// humidity and one showing outside temperature in degrees F.
 
 #include <memory>
 
+#include "displays.h"
 #include "sensesp.h"
 #include "sensesp/signalk/signalk_value_listener.h"
 #include "sensesp/system/lambda_consumer.h"
 #include "sensesp_app_builder.h"
-#include "displays.h"
 
 using namespace sensesp;
 using namespace segmented_led_display;
 
-
 // The setup function performs one-time application initialization.
 void setup() {
   SetupLogging(ESP_LOG_DEBUG);
+
   // Construct the global SensESPApp() object
   SensESPAppBuilder builder;
   sensesp_app = (&builder)
@@ -33,7 +27,7 @@ void setup() {
                     //->set_wifi_client("My WiFi SSID", "my_wifi_password")
                     //->set_wifi_access_point("My AP SSID", "my_ap_password")
                     //->set_sk_server("192.168.10.3", 80)
-  ->get_app();
+                    ->get_app();
 
   // works fine to reuse one pin for 'clk', for all displays
   const uint8_t commonClk = 15;
@@ -42,21 +36,29 @@ void setup() {
   auto humidityDisplay = createTm1637Facade<NUM_DIGITS_4>(18, commonClk);
   auto temperatureDisplay = createTm1637Facade<NUM_DIGITS_4>(19, commonClk);
 
-  auto* timeListener = new StringSKListener("environment.time", 50);
-  timeListener->connect_to(new LambdaConsumer<String>([&clockDisplay1, &clockDisplay2](String data) {
-    clockDisplay1.writeHourMinute24(data);
-    clockDisplay2.writeMinutesSeconds(data);
-  }));
+  // The lambdas capture the display shared_ptrs by value, so the displays
+  // stay alive as long as the consumers do.
+  auto timeListener = std::make_shared<StringSKListener>("environment.time", 50);
+  auto timeConsumer = std::make_shared<LambdaConsumer<String>>(
+      [clockDisplay1, clockDisplay2](String data) {
+        clockDisplay1->writeHourMinute24(data);
+        clockDisplay2->writeMinutesSeconds(data);
+      });
+  timeListener->connect_to(timeConsumer);
 
-  auto* humidityListener = new IntSKListener("environment.outside.relativeHumidity");
-  humidityListener->connect_to(new LambdaConsumer<int>([&humidityDisplay](int data) {
-    humidityDisplay.writeSignedDecimal(data);
-  }));
+  auto humidityListener = std::make_shared<IntSKListener>(
+      "environment.outside.relativeHumidity");
+  auto humidityConsumer = std::make_shared<LambdaConsumer<int>>(
+      [humidityDisplay](int data) { humidityDisplay->writeSignedDecimal(data); });
+  humidityListener->connect_to(humidityConsumer);
 
-  auto* temperatureListener = new FloatSKListener("environment.outside.temperature");
-  temperatureListener->connect_to(new LambdaConsumer<float>([&temperatureDisplay](float degreesK) {
-    temperatureDisplay.writeTempDegF(degreesK);
-  }));
+  auto temperatureListener = std::make_shared<FloatSKListener>(
+      "environment.outside.temperature");
+  auto temperatureConsumer = std::make_shared<LambdaConsumer<float>>(
+      [temperatureDisplay](float degreesK) {
+        temperatureDisplay->writeTempDegF(degreesK);
+      });
+  temperatureListener->connect_to(temperatureConsumer);
 
   // To avoid garbage collecting all shared pointers created in setup(),
   // loop from here.
@@ -65,7 +67,4 @@ void setup() {
   }
 }
 
-void loop() {
-  event_loop()->tick();
-}
-
+void loop() { event_loop()->tick(); }
